@@ -1,0 +1,49 @@
+{
+  "activeProfileId": "tomato",
+  "profiles": [
+    {
+      "id": "tomato",
+      "name": "گوجه فرنگی",
+      "tempMin": 18,
+      "tempMax": 27,
+      "humidityMin": 60,
+      "humidityMax": 70,
+      "soilMoistureMin": 60,
+      "soilMoistureMax": 80,
+      "lightHoursPerDay": 14
+    },
+    {
+      "id": "cucumber",
+      "name": "خیار",
+      "tempMin": 20,
+      "tempMax": 28,
+      "humidityMin": 70,
+      "humidityMax": 90,
+      "soilMoistureMin": 70,
+      "soilMoistureMax": 85,
+      "lightHoursPerDay": 12
+    },
+    {
+      "id": "lettuce",
+      "name": "کاهو",
+      "tempMin": 15,
+      "tempMax": 22,
+      "humidityMin": 50,
+      "humidityMax": 70,
+      "soilMoistureMin": 60,
+      "soilMoistureMax": 75,
+      "lightHoursPerDay": 10
+    },
+    {
+      "id": "pepper",
+      "name": "فلفل دلمه‌ای",
+      "tempMin": 20,
+      "tempMax": 30,
+      "humidityMin": 50,
+      "humidityMax": 70,
+      "soilMoistureMin": 55,
+      "soilMoistureMax": 75,
+      "lightHoursPerDay": 13
+    }
+  ]
+}
