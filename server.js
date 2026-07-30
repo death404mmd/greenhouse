@@ -45,14 +45,43 @@ function getActiveProfile() {
   return data.profiles.find((p) => p.id === data.activeProfileId) || data.profiles[0];
 }
 
+// ---------------- Temperature trend & daytime detection (for adaptive hysteresis) ----------------
+const TREND_WINDOW_MS = 10 * 60 * 1000; // look at the last 10 minutes
+
+function getRecentAvgTemp() {
+  const cutoff = Date.now() - TREND_WINDOW_MS;
+  const recent = sensorHistory.filter(
+    (h) => h.updatedAt && new Date(h.updatedAt).getTime() >= cutoff && typeof h.temp === "number"
+  );
+  if (recent.length === 0) return null;
+  const sum = recent.reduce((acc, h) => acc + h.temp, 0);
+  return sum / recent.length;
+}
+
+function isDaytimeNow(sensorData) {
+  // Once a light sensor (e.g. BH1750) is wired up, this becomes far more accurate
+  // than a fixed clock schedule - it reflects actual sun exposure, not just the hour.
+  if (typeof sensorData.lightLux === "number") {
+    return sensorData.lightLux > 200; // tune this threshold once real readings are available
+  }
+  // Fallback until the light sensor is installed: assume daytime between 7am-7pm
+  const hour = new Date().getHours();
+  return hour >= 7 && hour < 19;
+}
+
 // ---------------- Run the decision engine and send a command to the ESP32 ----------------
 function runControlCycle() {
   const profile = getActiveProfile();
+  const context = {
+    recentAvgTemp: getRecentAvgTemp(),
+    isDaytime: isDaytimeNow(latestSensorData),
+  };
   const { relayState: newRelayState, reasons } = controlEngine.evaluate(
     latestSensorData,
     profile,
     relayState,
-    manualOverrides
+    manualOverrides,
+    context
   );
   relayState = newRelayState;
 
@@ -199,6 +228,10 @@ app.post("/api/control", (req, res) => {
   }
   if (mode === "auto") {
     manualOverrides[relay] = null;
+    // When switching back to auto, don't let the leftover manual on/off state bias
+    // the hysteresis logic - re-evaluate this relay fresh, based only on the current
+    // sensor reading.
+    relayState[relay] = false;
   } else if (mode === "on") {
     manualOverrides[relay] = true;
   } else if (mode === "off") {
