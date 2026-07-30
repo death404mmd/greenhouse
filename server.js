@@ -1,10 +1,10 @@
 /**
  * server.js
  *
- * سرور مرکزی گلخونه هوشمند.
- * - از طریق WebSocket به ماژول ESP32 وصل می‌شه (داده سنسور می‌گیره، فرمان رله می‌فرسته)
- * - از طریق WebSocket به پنل React هم وصل می‌شه (برای نمایش زنده)
- * - از طریق REST API پروفایل‌ها و تاریخچه رو مدیریت می‌کنه
+ * Central server for the smart greenhouse.
+ * - Connects to the ESP32 module over WebSocket (receives sensor data, sends relay commands)
+ * - Connects to the React panel over WebSocket as well (for live display)
+ * - Manages crop profiles and history via a REST API
  */
 
 const express = require("express");
@@ -17,7 +17,7 @@ const controlEngine = require("./controlEngine");
 
 const PROFILES_PATH = path.join(__dirname, "profiles.json");
 const PORT = process.env.PORT || 3001;
-const MAX_HISTORY = 500; // حداکثر تعداد رکورد سنسوری که در حافظه نگه می‌داریم
+const MAX_HISTORY = 500; // maximum number of sensor records kept in memory
 
 const app = express();
 app.use(cors());
@@ -26,12 +26,12 @@ app.use(express.json());
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 
-// ---------------- وضعیت درون‌حافظه‌ای سرور ----------------
+// ---------------- In-memory server state ----------------
 let latestSensorData = { temp: null, humidity: null, soilMoisture: null, lightLux: null, waterLevel: null, updatedAt: null };
 let relayState = { fan: false, heater: false, pump: false };
-let manualOverrides = { fan: null, heater: null, pump: null }; // null یعنی حالت خودکار
+let manualOverrides = { fan: null, heater: null, pump: null }; // null means automatic mode
 let sensorHistory = [];
-let esp32Socket = null; // فقط یک دستگاه ESP32 فرض شده؛ برای چند دستگاه باید Map بشه
+let esp32Socket = null; // assumes a single ESP32 device; would need a Map for multiple devices
 
 function loadProfiles() {
   return JSON.parse(fs.readFileSync(PROFILES_PATH, "utf-8"));
@@ -45,7 +45,7 @@ function getActiveProfile() {
   return data.profiles.find((p) => p.id === data.activeProfileId) || data.profiles[0];
 }
 
-// ---------------- اجرای موتور تصمیم‌گیری و ارسال فرمان به ESP32 ----------------
+// ---------------- Run the decision engine and send a command to the ESP32 ----------------
 function runControlCycle() {
   const profile = getActiveProfile();
   const { relayState: newRelayState, reasons } = controlEngine.evaluate(
@@ -80,7 +80,7 @@ function broadcastToFrontend(payload) {
   });
 }
 
-// ---------------- مدیریت اتصالات WebSocket ----------------
+// ---------------- WebSocket connection handling ----------------
 wss.on("connection", (ws) => {
   ws.isFrontend = false;
   ws.isESP32 = false;
@@ -90,18 +90,18 @@ wss.on("connection", (ws) => {
     try {
       msg = JSON.parse(raw.toString());
     } catch (e) {
-      return; // پیام نامعتبر، نادیده گرفته می‌شه
+      return; // invalid message, ignore it
     }
 
-    // شناسایی نوع کلاینت
+    // Identify the client type
     if (msg.type === "identify") {
       if (msg.role === "esp32") {
         ws.isESP32 = true;
         esp32Socket = ws;
-        console.log("✅ ESP32 متصل شد");
+        console.log("✅ ESP32 connected");
       } else if (msg.role === "frontend") {
         ws.isFrontend = true;
-        // بلافاصله آخرین وضعیت رو برای کلاینت جدید بفرست
+        // immediately send the latest state to the new client
         ws.send(
           JSON.stringify({
             type: "status_update",
@@ -114,7 +114,7 @@ wss.on("connection", (ws) => {
       return;
     }
 
-    // دریافت داده سنسور از ESP32
+    // Receive sensor data from the ESP32
     if (msg.type === "sensor_data") {
       latestSensorData = { ...msg.data, updatedAt: new Date().toISOString() };
       sensorHistory.push(latestSensorData);
@@ -127,14 +127,14 @@ wss.on("connection", (ws) => {
   ws.on("close", () => {
     if (ws === esp32Socket) {
       esp32Socket = null;
-      console.log("❌ ESP32 قطع شد");
+      console.log("❌ ESP32 disconnected");
     }
   });
 });
 
 // ---------------- REST API ----------------
 
-// وضعیت لحظه‌ای کل سیستم
+// Live status of the whole system
 app.get("/api/status", (req, res) => {
   res.json({
     sensorData: latestSensorData,
@@ -145,17 +145,17 @@ app.get("/api/status", (req, res) => {
   });
 });
 
-// تاریخچه سنسورها (برای نمودار)
+// Sensor history (for the chart)
 app.get("/api/history", (req, res) => {
   res.json(sensorHistory);
 });
 
-// لیست همه پروفایل‌ها
+// List all profiles
 app.get("/api/profiles", (req, res) => {
   res.json(loadProfiles());
 });
 
-// افزودن یا ویرایش یک پروفایل
+// Add or edit a profile
 app.post("/api/profiles", (req, res) => {
   const data = loadProfiles();
   const incoming = req.body;
@@ -169,7 +169,7 @@ app.post("/api/profiles", (req, res) => {
   res.json({ success: true, profiles: data.profiles });
 });
 
-// حذف پروفایل
+// Delete a profile
 app.delete("/api/profiles/:id", (req, res) => {
   const data = loadProfiles();
   data.profiles = data.profiles.filter((p) => p.id !== req.params.id);
@@ -177,25 +177,25 @@ app.delete("/api/profiles/:id", (req, res) => {
   res.json({ success: true });
 });
 
-// تنظیم محصول فعال - این همون جاییه که "فقط اسم محصول رو می‌گی و خودش کنترل می‌کنه"
+// Set the active crop - this is exactly the "just tell it the crop name and it handles the rest" feature
 app.post("/api/profiles/active", (req, res) => {
   const { profileId } = req.body;
   const data = loadProfiles();
   if (!data.profiles.find((p) => p.id === profileId)) {
-    return res.status(404).json({ error: "پروفایل پیدا نشد" });
+    return res.status(404).json({ error: "Profile not found" });
   }
   data.activeProfileId = profileId;
   saveProfiles(data);
-  runControlCycle(); // بلافاصله با پروفایل جدید یک چرخه کنترل اجرا کن
+  runControlCycle(); // immediately run a control cycle with the new profile
   res.json({ success: true, activeProfileId: profileId });
 });
 
-// کنترل دستی / بازگشت به حالت خودکار
+// Manual control / return to automatic mode
 // body: { relay: "fan" | "heater" | "pump", mode: "on" | "off" | "auto" }
 app.post("/api/control", (req, res) => {
   const { relay, mode } = req.body;
   if (!["fan", "heater", "pump"].includes(relay)) {
-    return res.status(400).json({ error: "نام رله نامعتبره" });
+    return res.status(400).json({ error: "Invalid relay name" });
   }
   if (mode === "auto") {
     manualOverrides[relay] = null;
@@ -204,12 +204,12 @@ app.post("/api/control", (req, res) => {
   } else if (mode === "off") {
     manualOverrides[relay] = false;
   } else {
-    return res.status(400).json({ error: "mode باید on / off / auto باشه" });
+    return res.status(400).json({ error: "mode must be on / off / auto" });
   }
   runControlCycle();
   res.json({ success: true, manualOverrides });
 });
 
 server.listen(PORT, () => {
-  console.log(`🌱 Greenhouse backend روی پورت ${PORT} در حال اجراست`);
+  console.log(`🌱 Greenhouse backend running on port ${PORT}`);
 });

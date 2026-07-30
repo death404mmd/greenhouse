@@ -1,7 +1,7 @@
 {
   "name": "greenhouse-backend",
   "version": "1.0.0",
-  "description": "مغز کنترلی گلخونه هوشمند - ارتباط با ESP32 و پنل مدیریت",
+  "description": "Control brain for a smart greenhouse - communicates with the ESP32 and the management panel",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",

@@ -1,102 +1,103 @@
 /**
  * controlEngine.js
  *
- * این ماژول قلب تصمیم‌گیری گلخونه‌ست.
- * بر اساس داده‌های لحظه‌ای سنسورها و پروفایل محصول انتخاب‌شده،
- * وضعیت رله‌ها (فن، بخاری، پمپ آب) رو تعیین می‌کنه.
+ * This module is the decision-making heart of the greenhouse.
+ * Based on the live sensor readings and the currently selected crop
+ * profile, it determines the state of the relays (fan, heater, water pump).
  *
- * از منطق "هیسترزیس" استفاده می‌کنیم تا رله‌ها مدام روشن/خاموش نشن
- * (مثلاً فن دقیقاً روی ۲۷ درجه روشن نمی‌شه و روی ۲۷ درجه هم خاموش نمی‌شه،
- * بلکه یک فاصله ایمن بین روشن‌شدن و خاموش‌شدن وجود داره).
+ * It uses "hysteresis" logic so relays don't rapidly flip on/off
+ * (e.g. the fan won't switch on and off repeatedly right at the exact
+ * threshold temperature - there's a safe buffer between turning on and off).
  */
 
-// میزان هیسترزیس (فاصله ایمن) برای هر پارامتر - قابل تنظیم
+// Hysteresis (safety buffer) amount for each parameter - adjustable
 const HYSTERESIS = {
-  temp: 1.5,       // درجه سانتی‌گراد
-  humidity: 5,     // درصد
-  soilMoisture: 5, // درصد
+  temp: 1.5,       // degrees Celsius
+  humidity: 5,     // percent
+  soilMoisture: 5, // percent
 };
 
 /**
- * @param {object} sensorData - آخرین داده سنسورها { temp, humidity, soilMoisture, lightLux, waterLevel }
- * @param {object} profile - پروفایل فعال محصول
- * @param {object} previousRelayState - وضعیت قبلی رله‌ها (برای حفظ هیسترزیس)
- * @param {object} manualOverrides - override های دستی کاربر { fan: true/false/null, heater: ..., pump: ... }
- *        اگر مقدار یک رله در اینجا null نباشه، یعنی کاربر دستی کنترلش می‌کنه و موتور خودکار دخالت نمی‌کنه.
+ * @param {object} sensorData - latest sensor readings { temp, humidity, soilMoisture, lightLux, waterLevel }
+ * @param {object} profile - the active crop profile
+ * @param {object} previousRelayState - previous relay states (needed to maintain hysteresis)
+ * @param {object} manualOverrides - user manual overrides { fan: true/false/null, heater: ..., pump: ... }
+ *        If a relay's value here is not null, the user is controlling it manually and the
+ *        automatic engine won't interfere with it.
  * @returns {object} { relayState, reasons }
  */
 function evaluate(sensorData, profile, previousRelayState = {}, manualOverrides = {}) {
   const relayState = { ...previousRelayState };
   const reasons = {};
 
-  // ---------- کنترل فن (بر اساس دما) ----------
+  // ---------- Fan control (based on temperature) ----------
   if (manualOverrides.fan !== null && manualOverrides.fan !== undefined) {
     relayState.fan = manualOverrides.fan;
-    reasons.fan = "کنترل دستی توسط کاربر";
+    reasons.fan = "Manually controlled by user";
   } else if (typeof sensorData.temp === "number") {
     const wasOn = !!previousRelayState.fan;
     if (!wasOn && sensorData.temp >= profile.tempMax) {
       relayState.fan = true;
-      reasons.fan = `دما (${sensorData.temp}) به سقف مجاز (${profile.tempMax}) رسید`;
+      reasons.fan = `Temperature (${sensorData.temp}) reached the maximum allowed (${profile.tempMax})`;
     } else if (wasOn && sensorData.temp <= profile.tempMax - HYSTERESIS.temp) {
       relayState.fan = false;
-      reasons.fan = `دما به زیر آستانه ایمن (${(profile.tempMax - HYSTERESIS.temp).toFixed(1)}) رسید`;
+      reasons.fan = `Temperature dropped back below the safe threshold (${(profile.tempMax - HYSTERESIS.temp).toFixed(1)})`;
     } else {
       relayState.fan = wasOn;
-      reasons.fan = "بدون تغییر";
+      reasons.fan = "No change";
     }
   }
 
-  // ---------- کنترل بخاری (بر اساس دما) ----------
+  // ---------- Heater control (based on temperature) ----------
   if (manualOverrides.heater !== null && manualOverrides.heater !== undefined) {
     relayState.heater = manualOverrides.heater;
-    reasons.heater = "کنترل دستی توسط کاربر";
+    reasons.heater = "Manually controlled by user";
   } else if (typeof sensorData.temp === "number") {
     const wasOn = !!previousRelayState.heater;
     if (!wasOn && sensorData.temp <= profile.tempMin) {
       relayState.heater = true;
-      reasons.heater = `دما (${sensorData.temp}) به کف مجاز (${profile.tempMin}) رسید`;
+      reasons.heater = `Temperature (${sensorData.temp}) reached the minimum allowed (${profile.tempMin})`;
     } else if (wasOn && sensorData.temp >= profile.tempMin + HYSTERESIS.temp) {
       relayState.heater = false;
-      reasons.heater = `دما به بالای آستانه ایمن (${(profile.tempMin + HYSTERESIS.temp).toFixed(1)}) رسید`;
+      reasons.heater = `Temperature rose back above the safe threshold (${(profile.tempMin + HYSTERESIS.temp).toFixed(1)})`;
     } else {
       relayState.heater = wasOn;
-      reasons.heater = "بدون تغییر";
+      reasons.heater = "No change";
     }
   }
 
-  // فن و بخاری هرگز نباید همزمان روشن باشن
+  // The fan and heater should never be on at the same time
   if (relayState.fan && relayState.heater) {
     relayState.heater = false;
-    reasons.heater = "به‌خاطر تداخل با فن، خاموش نگه داشته شد";
+    reasons.heater = "Kept off to avoid conflicting with the fan";
   }
 
-  // ---------- کنترل پمپ آب (بر اساس رطوبت خاک) ----------
+  // ---------- Water pump control (based on soil moisture) ----------
   if (manualOverrides.pump !== null && manualOverrides.pump !== undefined) {
     relayState.pump = manualOverrides.pump;
-    reasons.pump = "کنترل دستی توسط کاربر";
+    reasons.pump = "Manually controlled by user";
   } else if (typeof sensorData.soilMoisture === "number") {
-    // ایمنی: اگه سطح آب مخزن پایینه، پمپ رو روشن نکن
+    // Safety: don't turn the pump on if the water tank is low
     if (sensorData.waterLevel === "low") {
       relayState.pump = false;
-      reasons.pump = "مخزن آب خالیه - پمپ برای جلوگیری از آسیب خاموش موند";
+      reasons.pump = "Water tank is low - pump kept off to prevent damage";
     } else {
       const wasOn = !!previousRelayState.pump;
       if (!wasOn && sensorData.soilMoisture <= profile.soilMoistureMin) {
         relayState.pump = true;
-        reasons.pump = `رطوبت خاک (${sensorData.soilMoisture}) به کف مجاز (${profile.soilMoistureMin}) رسید`;
+        reasons.pump = `Soil moisture (${sensorData.soilMoisture}) reached the minimum allowed (${profile.soilMoistureMin})`;
       } else if (wasOn && sensorData.soilMoisture >= profile.soilMoistureMax) {
         relayState.pump = false;
-        reasons.pump = `رطوبت خاک به سقف مطلوب (${profile.soilMoistureMax}) رسید`;
+        reasons.pump = `Soil moisture reached the desired maximum (${profile.soilMoistureMax})`;
       } else {
         relayState.pump = wasOn;
-        reasons.pump = "بدون تغییر";
+        reasons.pump = "No change";
       }
     }
   } else {
-    // سنسور رطوبت خاک هنوز وصل نشده - پمپ رو دستی نگه دار (بدون تصمیم خودکار)
+    // Soil moisture sensor isn't connected yet - leave the pump as-is (no automatic decision)
     relayState.pump = previousRelayState.pump || false;
-    reasons.pump = "سنسور رطوبت خاک متصل نیست - نیاز به کنترل دستی یا اتصال سنسور";
+    reasons.pump = "Soil moisture sensor not connected - needs manual control or sensor installation";
   }
 
   return { relayState, reasons };

@@ -3,7 +3,7 @@
   "profiles": [
     {
       "id": "tomato",
-      "name": "گوجه فرنگی",
+      "name": "Tomato",
       "tempMin": 18,
       "tempMax": 27,
       "humidityMin": 60,
@@ -14,7 +14,7 @@
     },
     {
       "id": "cucumber",
-      "name": "خیار",
+      "name": "Cucumber",
       "tempMin": 20,
       "tempMax": 28,
       "humidityMin": 70,
@@ -25,7 +25,7 @@
     },
     {
       "id": "lettuce",
-      "name": "کاهو",
+      "name": "Lettuce",
       "tempMin": 15,
       "tempMax": 22,
       "humidityMin": 50,
@@ -36,7 +36,7 @@
     },
     {
       "id": "pepper",
-      "name": "فلفل دلمه‌ای",
+      "name": "Bell Pepper",
       "tempMin": 20,
       "tempMax": 30,
       "humidityMin": 50,
