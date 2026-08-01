@@ -1,7 +1,7 @@
 /**
  * server.js
  *
- * Central server for the smart greenhouse - multi-user, multi-greenhouse version.
+ * 14 Central server for the smart greenhouse - multi-user, multi-greenhouse version.
  * - Data lives in Supabase (Postgres) instead of a local JSON file, so nothing is
  *   lost when Render restarts the service.
  * - Each greenhouse belongs to one user (owner_id) and has its own API key that
