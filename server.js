@@ -329,6 +329,18 @@ wss.on("connection", (ws) => {
   });
 });
 
+// ---------------- Public contact form ----------------
+// No auth required - anyone visiting the site can send a message.
+app.post("/api/contact", async (req, res) => {
+  const { name, email, message } = req.body;
+  if (!name || !email || !message) {
+    return res.status(400).json({ error: "name, email and message are all required" });
+  }
+  const { error } = await supabase.from("contact_messages").insert({ name, email, message });
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ success: true });
+});
+
 // ---------------- REST API ----------------
 
 // List greenhouses owned by the logged-in user
@@ -525,6 +537,31 @@ app.delete("/api/admin/greenhouses/:id", requireAuth, requireAdmin, async (req, 
   const { error } = await supabase.from("greenhouses").delete().eq("id", req.params.id);
   if (error) return res.status(500).json({ error: error.message });
   liveState.delete(req.params.id);
+  res.json({ success: true });
+});
+
+// Contact messages sent through the public landing page
+app.get("/api/admin/messages", requireAuth, requireAdmin, async (req, res) => {
+  const { data, error } = await supabase
+    .from("contact_messages")
+    .select("*")
+    .order("created_at", { ascending: false });
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+app.patch("/api/admin/messages/:id", requireAuth, requireAdmin, async (req, res) => {
+  const { error } = await supabase
+    .from("contact_messages")
+    .update({ is_read: true })
+    .eq("id", req.params.id);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ success: true });
+});
+
+app.delete("/api/admin/messages/:id", requireAuth, requireAdmin, async (req, res) => {
+  const { error } = await supabase.from("contact_messages").delete().eq("id", req.params.id);
+  if (error) return res.status(500).json({ error: error.message });
   res.json({ success: true });
 });
 
