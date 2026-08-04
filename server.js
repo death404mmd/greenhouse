@@ -374,10 +374,25 @@ app.post("/api/greenhouses", requireAuth, async (req, res) => {
   res.json({ ...gh, profiles: profiles.map(profileToClientShape) });
 });
 
+// Rename a greenhouse (owner only)
+app.patch("/api/greenhouses/:id", requireAuth, requireOwnedGreenhouse, async (req, res) => {
+  const { name } = req.body;
+  if (!name || !name.trim()) return res.status(400).json({ error: "name is required" });
+  const { data, error } = await supabase
+    .from("greenhouses")
+    .update({ name: name.trim() })
+    .eq("id", req.params.id)
+    .select()
+    .single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ id: data.id, name: data.name });
+});
+
 // Live status for one greenhouse
 app.get("/api/greenhouses/:id/status", requireAuth, requireOwnedGreenhouse, async (req, res) => {
   const entry = await loadGreenhouseState(req.params.id);
   res.json({
+    name: req.greenhouse.name,
     sensorData: entry.sensorData,
     relayState: entry.relayState,
     manualOverrides: entry.manualOverrides,
@@ -530,6 +545,20 @@ app.post("/api/admin/greenhouses/:id/regenerate-key", requireAuth, requireAdmin,
     .single();
   if (error) return res.status(500).json({ error: error.message });
   res.json({ id: data.id, apiKey: data.api_key });
+});
+
+// Renames any greenhouse (admin only)
+app.patch("/api/admin/greenhouses/:id", requireAuth, requireAdmin, async (req, res) => {
+  const { name } = req.body;
+  if (!name || !name.trim()) return res.status(400).json({ error: "name is required" });
+  const { data, error } = await supabase
+    .from("greenhouses")
+    .update({ name: name.trim() })
+    .eq("id", req.params.id)
+    .select()
+    .single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ id: data.id, name: data.name });
 });
 
 // Deletes a greenhouse entirely (cascades to its profiles/state/history)
