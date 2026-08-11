@@ -31,7 +31,6 @@ const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 
 // ---------------- In-memory live state, one entry per greenhouse (cache backed by the DB) ----------------
-// Map<greenhouseId, { sensorData, relayState, manualOverrides, activeProfileId, profiles, recentTemps, esp32Socket }>
 const liveState = new Map();
 
 const DEFAULT_PROFILES = [
@@ -68,7 +67,6 @@ function profileToClientShape(p) {
   };
 }
 
-// ---------------- Auth middleware (verifies the Supabase session token) ----------------
 async function requireAuth(req, res, next) {
   const authHeader = req.headers.authorization || "";
   const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
@@ -84,7 +82,6 @@ async function requireAuth(req, res, next) {
   next();
 }
 
-// Confirms the greenhouse in the URL actually belongs to the logged-in user
 async function requireOwnedGreenhouse(req, res, next) {
   const { data: gh, error } = await supabase
     .from("greenhouses")
@@ -97,14 +94,12 @@ async function requireOwnedGreenhouse(req, res, next) {
   next();
 }
 
-// Only allows access to users listed in the "admins" table
 async function requireAdmin(req, res, next) {
   const { data, error } = await supabase.from("admins").select("user_id").eq("user_id", req.userId).maybeSingle();
   if (error || !data) return res.status(403).json({ error: "Admin access required" });
   next();
 }
 
-// ---------------- Load (and cache) a greenhouse's live state ----------------
 async function loadGreenhouseState(greenhouseId) {
   if (liveState.has(greenhouseId)) return liveState.get(greenhouseId);
 
@@ -118,6 +113,12 @@ async function loadGreenhouseState(greenhouseId) {
       soilMoisture: orDefault(state, "latest_soil_moisture", null),
       lightLux: orDefault(state, "latest_light_lux", null),
       waterLevel: orDefault(state, "latest_water_level", null),
+      waterFlow: orDefault(state, "latest_water_flow", null),
+      waterUsedTotal: orDefault(state, "latest_water_used_total", null),
+      waterTankPct: orDefault(state, "latest_water_tank_pct", null),
+      windSpeed: orDefault(state, "latest_wind_speed", null),
+      co2Ppm: orDefault(state, "latest_co2_ppm", null),
+      outsideTemp: orDefault(state, "latest_outside_temp", null),
       updatedAt: orDefault(state, "updated_at", null),
     },
     relayState: {
@@ -136,7 +137,7 @@ async function loadGreenhouseState(greenhouseId) {
       profiles && profiles[0] ? profiles[0].id : null
     ),
     profiles: profiles || [],
-    recentTemps: [], // short in-memory buffer for the adaptive-hysteresis trend calculation
+    recentTemps: [],
     esp32Socket: null,
   };
   liveState.set(greenhouseId, entry);
@@ -160,7 +161,6 @@ function isDaytimeNow(sensorData) {
   return hour >= 7 && hour < 19;
 }
 
-// ---------------- Run the decision engine for one greenhouse ----------------
 async function runControlCycle(greenhouseId) {
   const entry = await loadGreenhouseState(greenhouseId);
   const profile = getActiveProfile(entry);
@@ -185,7 +185,6 @@ async function runControlCycle(greenhouseId) {
   );
   entry.relayState = relayState;
 
-  // Write-through to the database (fire and forget - doesn't block the control loop)
   supabase
     .from("greenhouse_state")
     .upsert({
@@ -202,6 +201,12 @@ async function runControlCycle(greenhouseId) {
       latest_soil_moisture: entry.sensorData.soilMoisture,
       latest_light_lux: entry.sensorData.lightLux,
       latest_water_level: entry.sensorData.waterLevel,
+      latest_water_flow: entry.sensorData.waterFlow,
+      latest_water_used_total: entry.sensorData.waterUsedTotal,
+      latest_water_tank_pct: entry.sensorData.waterTankPct,
+      latest_wind_speed: entry.sensorData.windSpeed,
+      latest_co2_ppm: entry.sensorData.co2Ppm,
+      latest_outside_temp: entry.sensorData.outsideTemp,
       updated_at: entry.sensorData.updatedAt,
     })
     .then(({ error }) => {
@@ -233,7 +238,6 @@ function broadcastToFrontend(greenhouseId, payload) {
   });
 }
 
-// ---------------- WebSocket connection handling ----------------
 wss.on("connection", (ws) => {
   ws.isFrontend = false;
   ws.isESP32 = false;
@@ -244,7 +248,7 @@ wss.on("connection", (ws) => {
     try {
       msg = JSON.parse(raw.toString());
     } catch (e) {
-      return; // invalid message, ignore it
+      return;
     }
 
     if (msg.type === "identify") {
@@ -295,7 +299,20 @@ wss.on("connection", (ws) => {
 
     if (msg.type === "sensor_data" && ws.isESP32 && ws.greenhouseId) {
       const entry = await loadGreenhouseState(ws.greenhouseId);
-      entry.sensorData = { ...msg.data, updatedAt: new Date().toISOString() };
+      entry.sensorData = {
+        temp: orDefault(msg.data, "temp", null),
+        humidity: orDefault(msg.data, "humidity", null),
+        soilMoisture: orDefault(msg.data, "soilMoisture", null),
+        lightLux: orDefault(msg.data, "lightLux", null),
+        waterLevel: orDefault(msg.data, "waterLevel", null),
+        waterFlow: orDefault(msg.data, "waterFlow", null),
+        waterUsedTotal: orDefault(msg.data, "waterUsedTotal", null),
+        waterTankPct: orDefault(msg.data, "waterTankPct", null),
+        windSpeed: orDefault(msg.data, "windSpeed", null),
+        co2Ppm: orDefault(msg.data, "co2Ppm", null),
+        outsideTemp: orDefault(msg.data, "outsideTemp", null),
+        updatedAt: new Date().toISOString(),
+      };
 
       if (typeof msg.data.temp === "number") {
         entry.recentTemps.push({ temp: msg.data.temp, at: Date.now() });
@@ -306,11 +323,17 @@ wss.on("connection", (ws) => {
         .from("sensor_history")
         .insert({
           greenhouse_id: ws.greenhouseId,
-          temp: msg.data.temp,
-          humidity: msg.data.humidity,
-          soil_moisture: msg.data.soilMoisture,
-          light_lux: msg.data.lightLux,
-          water_level: msg.data.waterLevel,
+          temp: entry.sensorData.temp,
+          humidity: entry.sensorData.humidity,
+          soil_moisture: entry.sensorData.soilMoisture,
+          light_lux: entry.sensorData.lightLux,
+          water_level: entry.sensorData.waterLevel,
+          water_flow: entry.sensorData.waterFlow,
+          water_used_total: entry.sensorData.waterUsedTotal,
+          water_tank_pct: entry.sensorData.waterTankPct,
+          wind_speed: entry.sensorData.windSpeed,
+          co2_ppm: entry.sensorData.co2Ppm,
+          outside_temp: entry.sensorData.outsideTemp,
         })
         .then(({ error }) => {
           if (error) console.error("Failed to log sensor_history:", error.message);
@@ -329,8 +352,6 @@ wss.on("connection", (ws) => {
   });
 });
 
-// ---------------- Public contact form ----------------
-// No auth required - anyone visiting the site can send a message.
 app.post("/api/contact", async (req, res) => {
   const { name, email, message } = req.body;
   if (!name || !email || !message) {
@@ -341,9 +362,6 @@ app.post("/api/contact", async (req, res) => {
   res.json({ success: true });
 });
 
-// ---------------- REST API ----------------
-
-// List greenhouses owned by the logged-in user
 app.get("/api/greenhouses", requireAuth, async (req, res) => {
   const { data, error } = await supabase
     .from("greenhouses")
@@ -353,7 +371,6 @@ app.get("/api/greenhouses", requireAuth, async (req, res) => {
   res.json(data);
 });
 
-// Create a new greenhouse, auto-seeded with the default crop profiles
 app.post("/api/greenhouses", requireAuth, async (req, res) => {
   const { name } = req.body;
   if (!name) return res.status(400).json({ error: "name is required" });
@@ -374,7 +391,6 @@ app.post("/api/greenhouses", requireAuth, async (req, res) => {
   res.json({ ...gh, profiles: profiles.map(profileToClientShape) });
 });
 
-// Rename a greenhouse (owner only)
 app.patch("/api/greenhouses/:id", requireAuth, requireOwnedGreenhouse, async (req, res) => {
   const { name } = req.body;
   if (!name || !name.trim()) return res.status(400).json({ error: "name is required" });
@@ -388,7 +404,6 @@ app.patch("/api/greenhouses/:id", requireAuth, requireOwnedGreenhouse, async (re
   res.json({ id: data.id, name: data.name });
 });
 
-// Live status for one greenhouse
 app.get("/api/greenhouses/:id/status", requireAuth, requireOwnedGreenhouse, async (req, res) => {
   const entry = await loadGreenhouseState(req.params.id);
   res.json({
@@ -401,7 +416,6 @@ app.get("/api/greenhouses/:id/status", requireAuth, requireOwnedGreenhouse, asyn
   });
 });
 
-// Sensor history for the chart
 app.get("/api/greenhouses/:id/history", requireAuth, requireOwnedGreenhouse, async (req, res) => {
   const { data, error } = await supabase
     .from("sensor_history")
@@ -417,19 +431,23 @@ app.get("/api/greenhouses/:id/history", requireAuth, requireOwnedGreenhouse, asy
       soilMoisture: h.soil_moisture,
       lightLux: h.light_lux,
       waterLevel: h.water_level,
+      waterFlow: h.water_flow,
+      waterUsedTotal: h.water_used_total,
+      waterTankPct: h.water_tank_pct,
+      windSpeed: h.wind_speed,
+      co2Ppm: h.co2_ppm,
+      outsideTemp: h.outside_temp,
       updatedAt: h.recorded_at,
     }))
   );
 });
 
-// List crop profiles for one greenhouse
 app.get("/api/greenhouses/:id/profiles", requireAuth, requireOwnedGreenhouse, async (req, res) => {
   const { data, error } = await supabase.from("crop_profiles").select("*").eq("greenhouse_id", req.params.id);
   if (error) return res.status(500).json({ error: error.message });
   res.json(data.map(profileToClientShape));
 });
 
-// Add or edit a crop profile (send an "id" field to edit an existing one)
 app.post("/api/greenhouses/:id/profiles", requireAuth, requireOwnedGreenhouse, async (req, res) => {
   const b = req.body;
   const row = {
@@ -459,7 +477,6 @@ app.post("/api/greenhouses/:id/profiles", requireAuth, requireOwnedGreenhouse, a
   res.json(profileToClientShape(data));
 });
 
-// Delete a crop profile
 app.delete("/api/greenhouses/:id/profiles/:profileId", requireAuth, requireOwnedGreenhouse, async (req, res) => {
   const { error } = await supabase
     .from("crop_profiles")
@@ -473,7 +490,6 @@ app.delete("/api/greenhouses/:id/profiles/:profileId", requireAuth, requireOwned
   res.json({ success: true });
 });
 
-// Set the active crop for one greenhouse
 app.post("/api/greenhouses/:id/profiles/active", requireAuth, requireOwnedGreenhouse, async (req, res) => {
   const { profileId } = req.body;
   const entry = await loadGreenhouseState(req.params.id);
@@ -483,8 +499,6 @@ app.post("/api/greenhouses/:id/profiles/active", requireAuth, requireOwnedGreenh
   res.json({ success: true, activeProfileId: profileId });
 });
 
-// Manual control / return to automatic mode for one greenhouse
-// body: { relay: "fan" | "heater" | "pump", mode: "on" | "off" | "auto" }
 app.post("/api/greenhouses/:id/control", requireAuth, requireOwnedGreenhouse, async (req, res) => {
   const { relay, mode } = req.body;
   if (!["fan", "heater", "pump"].includes(relay)) return res.status(400).json({ error: "Invalid relay name" });
@@ -492,7 +506,7 @@ app.post("/api/greenhouses/:id/control", requireAuth, requireOwnedGreenhouse, as
   const entry = await loadGreenhouseState(req.params.id);
   if (mode === "auto") {
     entry.manualOverrides[relay] = null;
-    entry.relayState[relay] = false; // re-evaluate fresh instead of inheriting the manual state
+    entry.relayState[relay] = false;
   } else if (mode === "on") {
     entry.manualOverrides[relay] = true;
   } else if (mode === "off") {
@@ -504,16 +518,11 @@ app.post("/api/greenhouses/:id/control", requireAuth, requireOwnedGreenhouse, as
   res.json({ success: true, manualOverrides: entry.manualOverrides });
 });
 
-// ---------------- Admin API ----------------
-
-// Lets the frontend quietly check "should I show the admin link?"
 app.get("/api/admin/check", requireAuth, async (req, res) => {
   const { data } = await supabase.from("admins").select("user_id").eq("user_id", req.userId).maybeSingle();
   res.json({ isAdmin: !!data });
 });
 
-// Full overview: every user, their email, and every greenhouse they own
-// (including its API key) - only reachable by accounts in the admins table.
 app.get("/api/admin/overview", requireAuth, requireAdmin, async (req, res) => {
   const { data: authUsers, error: userError } = await supabase.auth.admin.listUsers();
   if (userError) return res.status(500).json({ error: userError.message });
@@ -535,7 +544,6 @@ app.get("/api/admin/overview", requireAuth, requireAdmin, async (req, res) => {
   res.json(result);
 });
 
-// Issues a brand new API key for a greenhouse (e.g. if a key was leaked)
 app.post("/api/admin/greenhouses/:id/regenerate-key", requireAuth, requireAdmin, async (req, res) => {
   const { data, error } = await supabase
     .from("greenhouses")
@@ -547,7 +555,6 @@ app.post("/api/admin/greenhouses/:id/regenerate-key", requireAuth, requireAdmin,
   res.json({ id: data.id, apiKey: data.api_key });
 });
 
-// Renames any greenhouse (admin only)
 app.patch("/api/admin/greenhouses/:id", requireAuth, requireAdmin, async (req, res) => {
   const { name } = req.body;
   if (!name || !name.trim()) return res.status(400).json({ error: "name is required" });
@@ -561,7 +568,6 @@ app.patch("/api/admin/greenhouses/:id", requireAuth, requireAdmin, async (req, r
   res.json({ id: data.id, name: data.name });
 });
 
-// Deletes a greenhouse entirely (cascades to its profiles/state/history)
 app.delete("/api/admin/greenhouses/:id", requireAuth, requireAdmin, async (req, res) => {
   const { error } = await supabase.from("greenhouses").delete().eq("id", req.params.id);
   if (error) return res.status(500).json({ error: error.message });
@@ -569,7 +575,6 @@ app.delete("/api/admin/greenhouses/:id", requireAuth, requireAdmin, async (req, 
   res.json({ success: true });
 });
 
-// Contact messages sent through the public landing page
 app.get("/api/admin/messages", requireAuth, requireAdmin, async (req, res) => {
   const { data, error } = await supabase
     .from("contact_messages")
@@ -592,6 +597,53 @@ app.delete("/api/admin/messages/:id", requireAuth, requireAdmin, async (req, res
   const { error } = await supabase.from("contact_messages").delete().eq("id", req.params.id);
   if (error) return res.status(500).json({ error: error.message });
   res.json({ success: true });
+});
+
+app.post("/api/ask-ai", async (req, res) => {
+  const { question } = req.body;
+  if (!question || !question.trim()) return res.status(400).json({ error: "question is required" });
+  if (!process.env.ANTHROPIC_API_KEY) {
+    return res.status(500).json({ error: "AI assistant is not configured yet" });
+  }
+
+  const systemPrompt = `You are a focused assistant embedded on the landing page of "Smart Greenhouse", a personal IoT portfolio project. Answer ONLY questions about this specific project. If asked anything unrelated (general knowledge, other topics, personal advice, etc.), politely reply that you can only answer questions about this greenhouse project and cannot help with that.
+
+Project facts you can use to answer:
+- Built by Mohammadmahdi Heibatian Ghalehsalimi, who is applying to a German Ausbildung (vocational apprenticeship) program.
+- An ESP32 microcontroller reads sensors (temperature, humidity, soil moisture, and optionally light, wind, CO2, water flow/tank level, outside temperature) and controls relays for a fan, heater, and irrigation pump.
+- A Node.js backend (hosted on Render) is the "brain" - it holds crop profiles (e.g. tomato, cucumber, lettuce, bell pepper) with target temperature/humidity ranges, and automatically decides when to switch each relay on or off, using hysteresis and adaptive logic based on recent temperature trends and daytime detection.
+- The ESP32 and the backend communicate over a secure WebSocket connection; the backend also exposes a REST API.
+- Data is stored in Supabase (Postgres), including per-user accounts, greenhouses, crop profiles, sensor history, and contact messages.
+- The frontend is a React (Vite) single-page app with a live dashboard: analog-style gauges, relay controls with manual/auto modes, a sensor history chart, and a picker for multiple greenhouses per account.
+- Each greenhouse has a unique API key that the ESP32 uses to authenticate itself to the backend.
+- Keep answers concise (a few sentences), friendly, and technically accurate.`;
+
+  try {
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": process.env.ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model: "claude-haiku-4-5-20251001",
+        max_tokens: 400,
+        system: systemPrompt,
+        messages: [{ role: "user", content: question.trim().slice(0, 1000) }],
+      }),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      console.error("Anthropic API error:", data);
+      return res.status(502).json({ error: "AI assistant is temporarily unavailable" });
+    }
+    const textBlock = data.content.find((c) => c.type === "text");
+    res.json({ answer: textBlock ? textBlock.text : "" });
+  } catch (err) {
+    console.error("Anthropic API call failed:", err.message);
+    res.status(502).json({ error: "AI assistant is temporarily unavailable" });
+  }
 });
 
 server.listen(PORT, () => {
