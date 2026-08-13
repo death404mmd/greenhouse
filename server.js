@@ -616,7 +616,8 @@ Project facts you can use to answer:
 - Data is stored in Supabase (Postgres), including per-user accounts, greenhouses, crop profiles, sensor history, and contact messages.
 - The frontend is a React (Vite) single-page app with a live dashboard: analog-style gauges, relay controls with manual/auto modes, a sensor history chart, and a picker for multiple greenhouses per account.
 - Each greenhouse has a unique API key that the ESP32 uses to authenticate itself to the backend.
-- Keep answers concise (a few sentences), friendly, and technically accurate.`;
+- Keep answers concise (a few sentences), friendly, and technically accurate.
+- Always answer in English, even if the question is asked in another language.`;
 
   try {
     const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
