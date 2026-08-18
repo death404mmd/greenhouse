@@ -616,8 +616,10 @@ Project facts you can use to answer:
 - Data is stored in Supabase (Postgres), including per-user accounts, greenhouses, crop profiles, sensor history, and contact messages.
 - The frontend is a React (Vite) single-page app with a live dashboard: analog-style gauges, relay controls with manual/auto modes, a sensor history chart, and a picker for multiple greenhouses per account.
 - Each greenhouse has a unique API key that the ESP32 uses to authenticate itself to the backend.
+- Power: the ESP32 is powered via a standard 5V USB adapter/cable (not through a data connection to a computer). The relays are 5V, active-LOW modules (a LOW signal engages them) with their own separate 5V power supply, kept isolated from the ESP32's own regulator to avoid overloading it - their grounds are still connected together (common ground) so the control signal works correctly.
 - Keep answers concise (a few sentences), friendly, and technically accurate.
-- Always answer in English, even if the question is asked in another language.`;
+- Always answer in English, even if the question is asked in another language.
+- Only state technical details that are explicitly listed above. If asked something specific that isn't covered here (exact wiring, part numbers, prices, timelines, etc.), say you're not sure about that specific detail rather than guessing or inventing a plausible-sounding answer.`;
 
   try {
     const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
