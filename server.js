@@ -177,6 +177,8 @@ async function loadGreenhouseState(greenhouseId) {
     profiles: profiles || [],
     recentTemps: [],
     esp32Socket: null,
+    lastEsp32SeenAt: null,
+    offlineAlertSent: false,
   };
   liveState.set(greenhouseId, entry);
   return entry;
@@ -276,6 +278,54 @@ function broadcastToFrontend(greenhouseId, payload) {
   });
 }
 
+// ---------------- Offline-device email alerts ----------------
+const OFFLINE_ALERT_THRESHOLD_MS = 15 * 60 * 1000; // alert after 15 minutes offline
+const OFFLINE_CHECK_INTERVAL_MS = 5 * 60 * 1000;   // check every 5 minutes
+
+async function sendOfflineAlertEmail(greenhouseId, greenhouseName, ownerEmail) {
+  if (!process.env.RESEND_API_KEY) {
+    console.log("RESEND_API_KEY not set - skipping offline alert email");
+    return;
+  }
+  try {
+    await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
+      },
+      body: JSON.stringify({
+        from: "Smart Greenhouse <onboarding@resend.dev>",
+        to: ownerEmail,
+        subject: `⚠️ ${greenhouseName} has gone offline`,
+        text: `Your greenhouse "${greenhouseName}" has not been reachable for over 15 minutes. It may have lost power or WiFi. Automatic climate control is paused until it reconnects.`,
+      }),
+    });
+  } catch (err) {
+    console.error("Failed to send offline alert email:", err.message);
+  }
+}
+
+setInterval(async () => {
+  const now = Date.now();
+  for (const [greenhouseId, entry] of liveState.entries()) {
+    if (entry.esp32Socket) continue; // currently connected, nothing to check
+    if (!entry.lastEsp32SeenAt) continue; // never connected yet this run, skip
+    if (entry.offlineAlertSent) continue; // already alerted for this outage
+
+    if (now - entry.lastEsp32SeenAt >= OFFLINE_ALERT_THRESHOLD_MS) {
+      const { data: gh } = await supabase.from("greenhouses").select("name, owner_id").eq("id", greenhouseId).maybeSingle();
+      if (!gh) continue;
+      const { data: userData } = await supabase.auth.admin.getUserById(gh.owner_id);
+      const ownerEmail = userData && userData.user ? userData.user.email : null;
+      if (ownerEmail) {
+        await sendOfflineAlertEmail(greenhouseId, gh.name, ownerEmail);
+        entry.offlineAlertSent = true;
+      }
+    }
+  }
+}, OFFLINE_CHECK_INTERVAL_MS);
+
 wss.on("connection", (ws) => {
   ws.isFrontend = false;
   ws.isESP32 = false;
@@ -301,6 +351,8 @@ wss.on("connection", (ws) => {
         ws.greenhouseId = gh.id;
         const entry = await loadGreenhouseState(gh.id);
         entry.esp32Socket = ws;
+        entry.lastEsp32SeenAt = Date.now();
+        entry.offlineAlertSent = false;
         console.log(`✅ ESP32 connected for greenhouse ${gh.id}`);
       } else if (msg.role === "frontend") {
         const { data: userData, error: userError } = await supabase.auth.getUser(msg.token);
@@ -337,6 +389,7 @@ wss.on("connection", (ws) => {
 
     if (msg.type === "sensor_data" && ws.isESP32 && ws.greenhouseId) {
       const entry = await loadGreenhouseState(ws.greenhouseId);
+      entry.lastEsp32SeenAt = Date.now();
       entry.sensorData = {
         temp: orDefault(msg.data, "temp", null),
         humidity: orDefault(msg.data, "humidity", null),
