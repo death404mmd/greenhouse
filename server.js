@@ -14,6 +14,7 @@ const express = require("express");
 const cors = require("cors");
 const http = require("http");
 const crypto = require("crypto");
+const rateLimit = require("express-rate-limit");
 const { WebSocketServer } = require("ws");
 const { createClient } = require("@supabase/supabase-js");
 const controlEngine = require("./controlEngine");
@@ -24,8 +25,45 @@ const TREND_WINDOW_MS = 10 * 60 * 1000; // look at the last 10 minutes for adapt
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 
 const app = express();
-app.use(cors());
+
+// Only allow requests from our own frontend, instead of any website.
+// Add more origins to this list if you deploy the frontend somewhere else too.
+const ALLOWED_ORIGINS = [
+  "https://greenhouse-frontend-rior.onrender.com",
+  "http://localhost:5173", // local development
+];
+app.use(
+  cors({
+    origin: function (origin, callback) {
+      // Allow requests with no origin (like curl, Postman, or the ESP32's own
+      // HTTP calls if any) - only browser-based requests send an Origin header.
+      if (!origin || ALLOWED_ORIGINS.includes(origin)) {
+        callback(null, true);
+      } else {
+        callback(new Error("Not allowed by CORS"));
+      }
+    },
+  })
+);
 app.use(express.json());
+
+// Rate limiters - protect the endpoints anyone on the internet can hit without
+// logging in, so a script can't spam messages, burn through the AI quota, or
+// hammer the server.
+const contactLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 5,
+  message: { error: "Too many messages sent. Please try again later." },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+const aiLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000, // 10 minutes
+  max: 15,
+  message: { error: "Too many questions in a short time. Please wait a bit and try again." },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
@@ -352,7 +390,7 @@ wss.on("connection", (ws) => {
   });
 });
 
-app.post("/api/contact", async (req, res) => {
+app.post("/api/contact", contactLimiter, async (req, res) => {
   const { name, email, message } = req.body;
   if (!name || !email || !message) {
     return res.status(400).json({ error: "name, email and message are all required" });
@@ -599,7 +637,7 @@ app.delete("/api/admin/messages/:id", requireAuth, requireAdmin, async (req, res
   res.json({ success: true });
 });
 
-app.post("/api/ask-ai", async (req, res) => {
+app.post("/api/ask-ai", aiLimiter, async (req, res) => {
   const { question } = req.body;
   if (!question || !question.trim()) return res.status(400).json({ error: "question is required" });
   if (!process.env.GROQ_API_KEY) {
