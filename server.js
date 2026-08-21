@@ -260,6 +260,7 @@ async function runControlCycle(greenhouseId) {
     relayState,
     reasons,
     activeProfile: profileToClientShape(profile),
+    esp32Connected: !!entry.esp32Socket,
   });
 }
 
@@ -381,6 +382,7 @@ wss.on("connection", (ws) => {
             sensorData: entry.sensorData,
             relayState: entry.relayState,
             activeProfile: profileToClientShape(getActiveProfile(entry)),
+            esp32Connected: !!entry.esp32Socket,
           })
         );
       }
@@ -439,6 +441,9 @@ wss.on("connection", (ws) => {
       const entry = liveState.get(ws.greenhouseId);
       if (entry && entry.esp32Socket === ws) entry.esp32Socket = null;
       console.log(`❌ ESP32 disconnected for greenhouse ${ws.greenhouseId}`);
+      // Tell any open frontend panels right away, instead of waiting for the
+      // next sensor reading that will now never come.
+      broadcastToFrontend(ws.greenhouseId, { type: "esp32_status", esp32Connected: false });
     }
   });
 });
